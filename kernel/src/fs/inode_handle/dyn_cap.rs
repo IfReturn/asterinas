@@ -4,21 +4,21 @@ use aster_rights::TRights;
 use inherit_methods_macro::inherit_methods;
 
 use super::*;
-use crate::{prelude::*, process::signal::Pollable};
+use crate::{fs::utils::Inode, prelude::*, process::signal::Pollable};
 
 impl InodeHandle<Rights> {
-    pub fn new(dentry: Dentry, access_mode: AccessMode, status_flags: StatusFlags) -> Result<Self> {
-        let inode = dentry.inode();
+    pub fn new(path: Path, access_mode: AccessMode, status_flags: StatusFlags) -> Result<Self> {
+        let inode = path.inode();
         inode.check_permission(access_mode.into())?;
-        Self::new_unchecked_access(dentry, access_mode, status_flags)
+        Self::new_unchecked_access(path, access_mode, status_flags)
     }
 
     pub fn new_unchecked_access(
-        dentry: Dentry,
+        path: Path,
         access_mode: AccessMode,
         status_flags: StatusFlags,
     ) -> Result<Self> {
-        let inode = dentry.inode();
+        let inode = path.inode();
         if inode.type_() == InodeType::Dir && access_mode.is_writable() {
             return_errno_with_message!(Errno::EISDIR, "directory cannot open to write");
         }
@@ -30,7 +30,7 @@ impl InodeHandle<Rights> {
         };
 
         let inner = Arc::new(InodeHandle_ {
-            dentry,
+            path,
             file_io,
             offset: Mutex::new(0),
             access_mode,
@@ -125,5 +125,9 @@ impl FileLike for InodeHandle<Rights> {
             return_errno_with_message!(Errno::EBADF, "file is not writable");
         }
         self.0.fallocate(mode, offset, len)
+    }
+
+    fn inode(&self) -> Option<&Arc<dyn Inode>> {
+        Some(self.path().inode())
     }
 }

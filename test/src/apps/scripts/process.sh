@@ -35,6 +35,7 @@ mmap/mmap_readahead
 mmap/mmap_vmrss
 process/group_session
 process/job_control
+process/pidfd
 process/wait4
 pthread/pthread_test
 pty/open_pty
@@ -43,6 +44,7 @@ sched/sched_attr
 sched/sched_attr_idle
 shm/posix_shm
 signal_c/parent_death_signal
+signal_c/sigaltstack
 signal_c/signal_fpu
 signal_c/signal_test
 signal_c/signal_test2

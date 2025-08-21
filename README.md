@@ -1,14 +1,17 @@
 <p align="center">
-    <img src="docs/src/images/logo_en.svg" alt="asterinas-logo" width="620"><br>
+    <img src="book/src/images/logo_en.svg" alt="asterinas-logo" width="620"><br>
     A secure, fast, and general-purpose OS kernel written in Rust and compatible with Linux<br/>
     <a href="https://github.com/asterinas/asterinas/actions/workflows/test_x86.yml"><img src="https://github.com/asterinas/asterinas/actions/workflows/test_x86.yml/badge.svg?event=push" alt="Test x86-64" style="max-width: 100%;"></a>
     <a href="https://github.com/asterinas/asterinas/actions/workflows/test_riscv.yml"><img src="https://github.com/asterinas/asterinas/actions/workflows/test_riscv.yml/badge.svg?event=push" alt="Test riscv64" style="max-width: 100%;"></a>
+    <a href="https://github.com/asterinas/asterinas/actions/workflows/test_loongarch.yml"><img src="https://github.com/asterinas/asterinas/actions/workflows/test_loongarch.yml/badge.svg?event=push" alt="Test loongarch64" style="max-width: 100%;"></a>
     <a href="https://github.com/asterinas/asterinas/actions/workflows/test_x86_tdx.yml"><img src="https://github.com/asterinas/asterinas/actions/workflows/test_x86_tdx.yml/badge.svg" alt="Test Intel TDX" style="max-width: 100%;"></a>
     <a href="https://asterinas.github.io/benchmark/x86-64/"><img src="https://github.com/asterinas/asterinas/actions/workflows/benchmark_x86.yml/badge.svg" alt="Benchmark x86-64" style="max-width: 100%;"></a>
     <br/>
 </p>
 
 English | [中文版](README_CN.md) | [日本語](README_JP.md)
+
+**NEWS: [SOSP'25](https://sigops.org/s/conferences/sosp/2025/) accepted yet another research paper on Asterinas: _CortenMM: Efficient Memory Management with Strong Correctness Guarantees_. Congratulations to the Asterinas community🎉🎉🎉**
 
 **NEWS: [USENIX ATC'25](https://www.usenix.org/conference/atc25) accepted two research papers on Asterinas: (1) _Asterinas: A Linux ABI-Compatible, Rust-Based Framekernel OS with a Small and Sound TCB_ and (2) _Converos: Practical Model Checking for Verifying Rust OS Kernel Concurrency_. Congratulations to the Asterinas community🎉🎉🎉**
 
@@ -57,7 +60,7 @@ git clone https://github.com/asterinas/asterinas
 2. Run a Docker container as the development environment.
 
 ```bash
-docker run -it --privileged --network=host --device=/dev/kvm -v $(pwd)/asterinas:/root/asterinas asterinas/asterinas:0.15.2-20250714
+docker run -it --privileged --network=host --device=/dev/kvm -v $(pwd)/asterinas:/root/asterinas asterinas/asterinas:0.16.0-20250815
 ```
 
 3. Inside the container, go to the project folder to build and run Asterinas.

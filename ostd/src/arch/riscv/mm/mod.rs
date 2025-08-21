@@ -4,6 +4,7 @@ use alloc::fmt;
 use core::ops::Range;
 
 use crate::{
+    cpu::extension::{has_extensions, IsaExtensions},
     mm::{
         page_prop::{CachePolicy, PageFlags, PageProperty, PrivilegedPageFlags as PrivFlags},
         page_table::PageTableEntryTrait,
@@ -100,7 +101,9 @@ pub struct PageTableEntry(usize);
 pub unsafe fn activate_page_table(root_paddr: Paddr, _root_pt_cache: CachePolicy) {
     assert!(root_paddr % PagingConsts::BASE_PAGE_SIZE == 0);
     let ppn = root_paddr >> 12;
-    riscv::register::satp::set(riscv::register::satp::Mode::Sv48, 0, ppn);
+    unsafe {
+        riscv::register::satp::set(riscv::register::satp::Mode::Sv48, 0, ppn);
+    }
 }
 
 pub fn current_page_table_paddr() -> Paddr {
@@ -172,6 +175,7 @@ impl PageTableEntryTrait for PageTableEntry {
         }
     }
 
+    #[expect(clippy::precedence)]
     fn set_prop(&mut self, prop: PageProperty) {
         let mut flags = PageTableFlags::VALID.bits()
             | parse_flags!(prop.flags.bits(), PageFlags::R, PageTableFlags::READABLE)
@@ -193,8 +197,12 @@ impl PageTableEntryTrait for PageTableEntry {
         match prop.cache {
             CachePolicy::Writeback => (),
             CachePolicy::Uncacheable => {
-                // Currently, Asterinas uses `Uncacheable` for I/O memory.
-                flags |= PageTableFlags::PBMT_IO.bits()
+                // TODO: Currently Asterinas uses `Uncacheable` only for I/O
+                // memory. Normal memory can also be `Noncacheable`, where the
+                // PBMT should be set to `PBMT_NC`.
+                if has_extensions(IsaExtensions::SVPBMT) {
+                    flags |= PageTableFlags::PBMT_IO.bits()
+                }
             }
             _ => panic!("unsupported cache policy"),
         }
@@ -223,20 +231,28 @@ impl fmt::Debug for PageTableEntry {
     }
 }
 
-pub(crate) fn __memcpy_fallible(dst: *mut u8, src: *const u8, size: usize) -> usize {
-    // TODO: implement fallible
-    unsafe {
-        riscv::register::sstatus::set_sum();
-    }
+pub(crate) unsafe fn __memcpy_fallible(dst: *mut u8, src: *const u8, size: usize) -> usize {
+    // TODO: Implement this fallible operation.
+    unsafe { riscv::register::sstatus::set_sum() };
     unsafe { core::ptr::copy(src, dst, size) };
     0
 }
 
-pub(crate) fn __memset_fallible(dst: *mut u8, value: u8, size: usize) -> usize {
-    // TODO: implement fallible
-    unsafe {
-        riscv::register::sstatus::set_sum();
-    }
+pub(crate) unsafe fn __memset_fallible(dst: *mut u8, value: u8, size: usize) -> usize {
+    // TODO: Implement this fallible operation.
+    unsafe { riscv::register::sstatus::set_sum() };
     unsafe { core::ptr::write_bytes(dst, value, size) };
     0
+}
+
+pub(crate) unsafe fn __atomic_load_fallible(ptr: *const u32) -> u64 {
+    // TODO: Implement this fallible operation.
+    unsafe { riscv::register::sstatus::set_sum() };
+    unsafe { core::intrinsics::atomic_load_relaxed(ptr) as u64 }
+}
+
+pub(crate) unsafe fn __atomic_cmpxchg_fallible(ptr: *mut u32, old_val: u32, new_val: u32) -> u64 {
+    // TODO: Implement this fallible operation.
+    unsafe { riscv::register::sstatus::set_sum() };
+    unsafe { core::intrinsics::atomic_cxchg_relaxed_relaxed(ptr, old_val, new_val).0 as u64 }
 }

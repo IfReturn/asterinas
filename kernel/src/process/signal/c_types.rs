@@ -35,7 +35,9 @@ pub struct siginfo_t {
     pub si_signo: i32,
     pub si_errno: i32,
     pub si_code: i32,
-    _padding: i32,
+    // In x86_64, there will be a 4-bytes padding here automatically, the offset of `siginfo_fields` is `0x10`.
+    // Yet in other architectures like arm64, there is no padding here and the offset of `siginfo_fields` is `0x0c`.
+    //_padding: i32,
     /// siginfo_fields should be a union type ( See occlum definition ). But union type have unsafe interfaces.
     /// Here we use a simple byte array.
     siginfo_fields: siginfo_fields_t,
@@ -47,13 +49,24 @@ impl siginfo_t {
             si_signo: num.as_u8() as i32,
             si_errno: 0,
             si_code: code,
-            _padding: 0,
             siginfo_fields: siginfo_fields_t::zero_fields(),
         }
     }
 
     pub fn set_si_addr(&mut self, si_addr: Vaddr) {
         self.siginfo_fields.sigfault.addr = si_addr;
+    }
+
+    pub fn set_pid_uid(&mut self, pid: Pid, uid: Uid) {
+        let pid_uid = siginfo_common_first_t {
+            piduid: siginfo_piduid_t { pid, uid },
+        };
+
+        self.siginfo_fields.common.first = pid_uid;
+    }
+
+    pub fn set_status(&mut self, status: i32) {
+        self.siginfo_fields.common.second.sigchild.status = status;
     }
 
     pub fn si_addr(&self) -> Vaddr {
@@ -79,7 +92,7 @@ impl siginfo_fields_t {
 
 #[derive(Clone, Copy, Pod)]
 #[repr(C)]
-union siginfo_common_t {
+struct siginfo_common_t {
     first: siginfo_common_first_t,
     second: siginfo_common_second_t,
 }
@@ -159,6 +172,7 @@ union siginfo_addr_bnd_t {
     upper: Vaddr, // *const c_void,
 }
 
+/// Reference: <https://elixir.bootlin.com/linux/v6.15.7/source/include/uapi/asm-generic/ucontext.h#L5>
 #[cfg(target_arch = "x86_64")]
 #[derive(Clone, Copy, Debug, Default, Pod)]
 #[repr(C)]
@@ -170,7 +184,9 @@ pub struct ucontext_t {
     pub uc_sigmask: sigset_t,
 }
 
-#[cfg(target_arch = "riscv64")]
+/// Reference: <https://elixir.bootlin.com/linux/v6.15.7/source/arch/riscv/include/uapi/asm/ucontext.h>
+/// Reference: <https://elixir.bootlin.com/linux/v6.15.7/source/arch/loongarch/include/uapi/asm/ucontext.h>
+#[cfg(any(target_arch = "riscv64", target_arch = "loongarch64"))]
 #[derive(Clone, Copy, Debug, Pod)]
 #[repr(C)]
 pub struct ucontext_t {
@@ -182,12 +198,16 @@ pub struct ucontext_t {
     pub uc_mcontext: mcontext_t,
 }
 
-#[cfg(target_arch = "riscv64")]
+#[cfg(any(target_arch = "riscv64", target_arch = "loongarch64"))]
 impl Default for ucontext_t {
     fn default() -> Self {
         Self {
+            uc_flags: 0,
+            uc_link: Default::default(),
+            uc_stack: Default::default(),
+            uc_sigmask: Default::default(),
             __unused: [0; 120],
-            ..Default::default()
+            uc_mcontext: Default::default(),
         }
     }
 }

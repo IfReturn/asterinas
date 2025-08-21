@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
+use core::sync::atomic::AtomicU32;
+
 use ostd::{
     cpu::{
         context::{FpuContext, UserContext},
@@ -27,7 +29,7 @@ use crate::{
 pub struct PosixThreadBuilder {
     // The essential part
     tid: Tid,
-    user_ctx: Arc<UserContext>,
+    user_ctx: Box<UserContext>,
     process: Weak<Process>,
     credentials: Credentials,
 
@@ -44,7 +46,7 @@ pub struct PosixThreadBuilder {
 }
 
 impl PosixThreadBuilder {
-    pub fn new(tid: Tid, user_ctx: Arc<UserContext>, credentials: Credentials) -> Self {
+    pub fn new(tid: Tid, user_ctx: Box<UserContext>, credentials: Credentials) -> Self {
         Self {
             tid,
             user_ctx,
@@ -143,13 +145,13 @@ impl PosixThreadBuilder {
                     name: Mutex::new(thread_name),
                     credentials,
                     file_table: Mutex::new(Some(file_table.clone_ro())),
-                    fs,
                     sig_mask,
                     sig_queues,
                     signalled_waker: SpinLock::new(None),
                     prof_clock,
                     virtual_timer_manager,
                     prof_timer_manager,
+                    io_priority: AtomicU32::new(0),
                 }
             };
 
@@ -166,6 +168,7 @@ impl PosixThreadBuilder {
                 clear_child_tid,
                 root_vmar,
                 file_table,
+                fs,
                 fpu_context,
             );
 

@@ -2,6 +2,7 @@
 
 //! Handles trap.
 
+#[expect(clippy::module_inception)]
 mod trap;
 
 use riscv::register::scause::Interrupt;
@@ -18,7 +19,9 @@ cpu_local_cell! {
 
 /// Initializes interrupt handling on RISC-V.
 pub(crate) unsafe fn init() {
-    self::trap::init();
+    unsafe {
+        self::trap::init();
+    }
 }
 
 /// Returns true if this function is called within the context of an IRQ handler

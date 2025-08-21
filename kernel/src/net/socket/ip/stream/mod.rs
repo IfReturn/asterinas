@@ -233,6 +233,7 @@ impl StreamSocket {
             let (target_state, iface_to_poll) = match init_stream.connect(
                 remote_endpoint,
                 &raw_option,
+                options.socket.reuse_addr(),
                 StreamObserver::new(self.pollee.clone()),
             ) {
                 Ok(connecting_stream) => {
@@ -541,14 +542,14 @@ impl Socket for StreamSocket {
         }
 
         let MessageHeader {
-            control_message, ..
+            control_messages, ..
         } = message_header;
 
         // According to the Linux man pages, `EISCONN` _may_ be returned when the destination
         // address is specified for a connection-mode socket. In practice, the destination address
         // is simply ignored. We follow the same behavior as the Linux implementation to ignore it.
 
-        if control_message.is_some() {
+        if !control_messages.is_empty() {
             // TODO: Support sending control message
             warn!("sending control message is not supported");
         }
@@ -574,7 +575,7 @@ impl Socket for StreamSocket {
 
         // According to <https://elixir.bootlin.com/linux/v6.0.9/source/net/ipv4/tcp.c#L2645>,
         // peer address is ignored for connected socket.
-        let message_header = MessageHeader::new(None, None);
+        let message_header = MessageHeader::new(None, Vec::new());
 
         Ok((received_bytes, message_header))
     }
@@ -808,6 +809,25 @@ impl GetSocketLevelOption for State {
 }
 
 impl SetSocketLevelOption for State {
+    fn set_reuse_addr(&self, reuse_addr: bool) {
+        let bound_port = match self {
+            State::Init(init_stream) => {
+                if let Some(bound_port) = init_stream.bound_port() {
+                    bound_port
+                } else {
+                    return;
+                }
+            }
+            State::Connecting(connecting_stream) => connecting_stream.bound_port(),
+            State::Connected(connected_stream) => connected_stream.bound_port(),
+            // Setting a listening address as reusable has no effect,
+            // since no other sockets can bind to a listening port.
+            State::Listen(_) => return,
+        };
+
+        bound_port.set_can_reuse(reuse_addr);
+    }
+
     fn set_keep_alive(&self, keep_alive: bool) -> NeedIfacePoll {
         let interval = if keep_alive {
             Some(KEEPALIVE_INTERVAL)

@@ -6,7 +6,12 @@ use aster_rights::Full;
 use ostd::{cpu::context::FpuContext, mm::Vaddr, sync::RwArc, task::CurrentTask};
 
 use super::RobustListHead;
-use crate::{fs::file_table::FileTable, process::signal::SigStack, vm::vmar::Vmar};
+use crate::{
+    fs::{file_table::FileTable, thread_info::ThreadFsInfo},
+    prelude::*,
+    process::signal::SigStack,
+    vm::vmar::Vmar,
+};
 
 /// Local data for a POSIX thread.
 pub struct ThreadLocal {
@@ -17,13 +22,17 @@ pub struct ThreadLocal {
 
     // Virtual memory address regions.
     root_vmar: RefCell<Option<Vmar<Full>>>,
+    page_fault_disabled: Cell<bool>,
 
     // Robust futexes.
     // https://man7.org/linux/man-pages/man2/get_robust_list.2.html
     robust_list: RefCell<Option<RobustListHead>>,
 
     // Files.
+    /// File table.
     file_table: RefCell<Option<RwArc<FileTable>>>,
+    /// File system.
+    fs: RefCell<Arc<ThreadFsInfo>>,
 
     // User FPU context.
     fpu_context: RefCell<FpuContext>,
@@ -35,7 +44,7 @@ pub struct ThreadLocal {
     // `sig_context` is always equals with RSP.
     sig_context: Cell<Option<Vaddr>>,
     /// Stack address, size, and flags for the signal handler.
-    sig_stack: RefCell<Option<SigStack>>,
+    sig_stack: RefCell<SigStack>,
 }
 
 impl ThreadLocal {
@@ -44,16 +53,19 @@ impl ThreadLocal {
         clear_child_tid: Vaddr,
         root_vmar: Vmar<Full>,
         file_table: RwArc<FileTable>,
+        fs: Arc<ThreadFsInfo>,
         fpu_context: FpuContext,
     ) -> Self {
         Self {
             set_child_tid: Cell::new(set_child_tid),
             clear_child_tid: Cell::new(clear_child_tid),
             root_vmar: RefCell::new(Some(root_vmar)),
+            page_fault_disabled: Cell::new(false),
             robust_list: RefCell::new(None),
             file_table: RefCell::new(Some(file_table)),
+            fs: RefCell::new(fs),
             sig_context: Cell::new(None),
-            sig_stack: RefCell::new(None),
+            sig_stack: RefCell::new(SigStack::default()),
             fpu_context: RefCell::new(fpu_context),
             fpu_state: Cell::new(FpuState::Unloaded),
         }
@@ -71,6 +83,45 @@ impl ThreadLocal {
         &self.root_vmar
     }
 
+    /// Executes the closure with the page fault handler diasabled.
+    ///
+    /// When page faults occur, the handler may attempt to load the page from the disk, which can break
+    /// the atomic mode. By using this method, the page fault handler will fail immediately, so
+    /// fallible memory operation will return [`Errno::EFAULT`] once it triggers a page fault.
+    ///
+    /// Usually, we should _not_ try to access the userspace memory while being in the atomic mode
+    /// (e.g., when holding a spin lock). If we must do so, this method is a last resort that disables
+    /// the handler instead.
+    ///
+    /// Note that the closure runs with different semantics of the fallible memory operation.
+    /// Therefore, if it fails with a [`Errno::EFAULT`], this method will return [`None`] and it is
+    /// the caller's responsibility to exit the atomic mode, handle the page fault, and retry. Do
+    /// _not_ use this method without adding code that explicitly handles the page fault!
+    pub fn with_page_fault_disabled<F, T>(&self, func: F) -> Option<Result<T>>
+    where
+        F: FnOnce() -> Result<T>,
+    {
+        let is_disabled = self.is_page_fault_disabled();
+        self.page_fault_disabled.set(true);
+
+        let result = func();
+
+        self.page_fault_disabled.set(is_disabled);
+
+        if result
+            .as_ref()
+            .is_err_and(|err| err.error() == Errno::EFAULT)
+        {
+            None
+        } else {
+            Some(result)
+        }
+    }
+
+    pub fn is_page_fault_disabled(&self) -> bool {
+        self.page_fault_disabled.get()
+    }
+
     pub fn robust_list(&self) -> &RefCell<Option<RobustListHead>> {
         &self.robust_list
     }
@@ -83,11 +134,19 @@ impl ThreadLocal {
         FileTableRefMut(self.file_table.borrow_mut())
     }
 
+    pub fn borrow_fs(&self) -> Ref<'_, Arc<ThreadFsInfo>> {
+        self.fs.borrow()
+    }
+
+    pub fn borrow_fs_mut(&self) -> RefMut<'_, Arc<ThreadFsInfo>> {
+        self.fs.borrow_mut()
+    }
+
     pub fn sig_context(&self) -> &Cell<Option<Vaddr>> {
         &self.sig_context
     }
 
-    pub fn sig_stack(&self) -> &RefCell<Option<SigStack>> {
+    pub fn sig_stack(&self) -> &RefCell<SigStack> {
         &self.sig_stack
     }
 

@@ -15,7 +15,7 @@ use crate::{
 };
 
 /// Userspace CPU context, including general-purpose registers and exception information.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 #[repr(C)]
 pub struct UserContext {
     user_context: RawUserContext,
@@ -65,6 +65,7 @@ pub struct GeneralRegs {
 /// CPU exception information.
 //
 // TODO: Refactor the struct into an enum (similar to x86's `CpuException`).
+#[expect(missing_docs)]
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
 pub struct CpuExceptionInfo {
@@ -118,19 +119,20 @@ impl UserContext {
         self.cpu_exception_info.take()
     }
 
-    /// Sets thread-local storage pointer.
+    /// Sets the thread-local storage pointer.
     pub fn set_tls_pointer(&mut self, tls: usize) {
         self.set_tp(tls)
     }
 
-    /// Gets thread-local storage pointer.
+    /// Gets the thread-local storage pointer.
     pub fn tls_pointer(&self) -> usize {
         self.tp()
     }
 
-    /// Activates thread-local storage pointer on the current CPU.
+    /// Activates the thread-local storage pointer for the current task.
     pub fn activate_tls_pointer(&self) {
-        // No-op
+        // In RISC-V, `tp` will be loaded at `UserContext::execute`, so it does not need to be
+        // activated in advance.
     }
 }
 
@@ -267,7 +269,7 @@ pub type CpuException = Exception;
 ///
 /// This could be used for saving both legacy and modern state format.
 // FIXME: Implement FPU context on RISC-V platforms.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct FpuContext;
 
 impl FpuContext {

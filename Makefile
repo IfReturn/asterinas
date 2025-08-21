@@ -3,7 +3,7 @@
 # =========================== Makefile options. ===============================
 
 # Global build options.
-ARCH ?= x86_64
+OSDK_TARGET_ARCH ?= x86_64
 BENCHMARK ?= none
 BOOT_METHOD ?= grub-rescue-iso
 BOOT_PROTOCOL ?= multiboot2
@@ -20,6 +20,8 @@ SMP ?= 1
 OSTD_TASK_STACK_SIZE_IN_PAGES ?= 64
 FEATURES ?=
 NO_DEFAULT_FEATURES ?= 0
+COVERAGE ?= 0
+ENABLE_BASIC_TEST ?= false
 # End of global build options.
 
 # GDB debugging and profiling options.
@@ -50,7 +52,7 @@ SHELL := /bin/bash
 CARGO_OSDK := ~/.cargo/bin/cargo-osdk
 
 # Common arguments for `cargo osdk` `build`, `run` and `test` commands.
-CARGO_OSDK_COMMON_ARGS := --target-arch=$(ARCH)
+CARGO_OSDK_COMMON_ARGS := --target-arch=$(OSDK_TARGET_ARCH)
 # The build arguments also apply to the `cargo osdk run` command.
 CARGO_OSDK_BUILD_ARGS := --kcmd-args="ostd.log_level=$(LOG_LEVEL)"
 CARGO_OSDK_TEST_ARGS :=
@@ -62,13 +64,16 @@ CARGO_OSDK_BUILD_ARGS += --kcmd-args="SYSCALL_TEST_WORKDIR=$(SYSCALL_TEST_WORKDI
 CARGO_OSDK_BUILD_ARGS += --kcmd-args="EXTRA_BLOCKLISTS_DIRS=$(EXTRA_BLOCKLISTS_DIRS)"
 CARGO_OSDK_BUILD_ARGS += --init-args="/opt/syscall_test/run_syscall_test.sh"
 else ifeq ($(AUTO_TEST), test)
+ENABLE_BASIC_TEST := true
 	ifneq ($(SMP), 1)
 		CARGO_OSDK_BUILD_ARGS += --kcmd-args="BLOCK_UNSUPPORTED_SMP_TESTS=1"
 	endif
 CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_general_test.sh"
 else ifeq ($(AUTO_TEST), boot)
+ENABLE_BASIC_TEST := true
 CARGO_OSDK_BUILD_ARGS += --init-args="/test/boot_hello.sh"
 else ifeq ($(AUTO_TEST), vsock)
+ENABLE_BASIC_TEST := true
 export VSOCK=on
 CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_vsock_test.sh"
 endif
@@ -100,14 +105,20 @@ BOOT_METHOD = qemu-direct
 OVMF = off
 endif
 
-ifeq ($(ARCH), riscv64)
+ifeq ($(OSDK_TARGET_ARCH), riscv64)
 SCHEME = riscv
+else ifeq ($(OSDK_TARGET_ARCH), loongarch64)
+SCHEME = loongarch
 endif
 
 ifneq ($(SCHEME), "")
 CARGO_OSDK_COMMON_ARGS += --scheme $(SCHEME)
 else
 CARGO_OSDK_COMMON_ARGS += --boot-method="$(BOOT_METHOD)"
+endif
+
+ifeq ($(COVERAGE), 1)
+CARGO_OSDK_COMMON_ARGS += --coverage
 endif
 
 ifdef FEATURES
@@ -130,7 +141,7 @@ CARGO_OSDK_COMMON_ARGS += --grub-boot-protocol=$(BOOT_PROTOCOL)
 endif
 
 ifeq ($(ENABLE_KVM), 1)
-	ifeq ($(ARCH), x86_64)
+	ifeq ($(OSDK_TARGET_ARCH), x86_64)
 		CARGO_OSDK_COMMON_ARGS += --qemu-args="-accel kvm"
 	endif
 endif
@@ -294,8 +305,10 @@ docs: $(CARGO_OSDK)
 	@for dir in $(OSDK_CRATES); do \
 		(cd $$dir && cargo osdk doc --no-deps) || exit 1; \
 	done
-	@echo "" 						# Add a blank line
-	@cd docs && mdbook build 				# Build mdBook
+
+.PHONY: book
+book:
+	@cd book && mdbook build
 
 .PHONY: format
 format:
@@ -303,7 +316,6 @@ format:
 	@$(MAKE) --no-print-directory -C test format
 
 .PHONY: check
-# FIXME: Make `make check` arch-aware.
 check: initramfs $(CARGO_OSDK)
 	@# Check formatting issues of the Rust code
 	@./tools/format_all.sh --check
@@ -334,6 +346,9 @@ check: initramfs $(CARGO_OSDK)
 	done
 	@for dir in $(OSDK_CRATES); do \
 		echo "Checking $$dir"; \
+		# Exclude linux-bzimage-setup since it only supports x86-64 currently and will panic \
+		# in other architectures. \
+		[ "$$dir" = "ostd/libs/linux-bzimage/setup" ] && [ "$(OSDK_TARGET_ARCH)" != "x86_64" ] && continue; \
 		(cd $$dir && cargo osdk clippy -- -- -D warnings) || exit 1; \
 	done
 	@
@@ -349,8 +364,8 @@ clean:
 	@cargo clean
 	@echo "Cleaning up OSDK workspace target files"
 	@cd osdk && cargo clean
-	@echo "Cleaning up documentation target files"
-	@cd docs && mdbook clean
+	@echo "Cleaning up mdBook output files"
+	@cd book && mdbook clean
 	@echo "Cleaning up test target files"
 	@$(MAKE) --no-print-directory -C test clean
 	@echo "Uninstalling OSDK"

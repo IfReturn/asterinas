@@ -165,18 +165,19 @@ impl Bar {
         if index >= 6 {
             return Err(Error::InvalidArgs);
         }
-        // Get the original value first, then write all 1 to the register to get the length
-        let raw = location.read32(index as u16 * 4 + PciDeviceCommonCfgOffset::Bar0 as u16);
-        if raw == 0 {
-            // no BAR
-            return Err(Error::InvalidArgs);
-        }
-        Ok(if raw & 1 == 0 {
-            Self::Memory(Arc::new(MemoryBar::new(&location, index)?))
+
+        let offset = index as u16 * 4 + PciDeviceCommonCfgOffset::Bar0 as u16;
+        let raw = location.read32(offset);
+
+        // Check the "Space Indicator" bit.
+        let result = if raw & 1 == 0 {
+            // Memory BAR
+            Self::Memory(Arc::new(MemoryBar::new(&location, index, raw)?))
         } else {
-            // IO BAR
-            Self::Io(Arc::new(IoBar::new(&location, index)?))
-        })
+            // I/O port BAR
+            Self::Io(Arc::new(IoBar::new(&location, index, raw)?))
+        };
+        Ok(result)
     }
 
     /// Reads a value of a specified type at a specified offset.
@@ -200,7 +201,7 @@ impl Bar {
 #[derive(Debug, Clone)]
 pub struct MemoryBar {
     base: u64,
-    size: u32,
+    size: u64,
     prefetchable: bool,
     address_length: AddrLen,
     io_memory: IoMem,
@@ -224,7 +225,7 @@ impl MemoryBar {
     }
 
     /// Size of the memory
-    pub fn size(&self) -> u32 {
+    pub fn size(&self) -> u64 {
         self.size
     }
 
@@ -234,39 +235,107 @@ impl MemoryBar {
     }
 
     /// Creates a memory BAR structure.
-    fn new(location: &PciDeviceLocation, index: u8) -> Result<Self> {
-        // Get the original value first, then write all 1 to the register to get the length
+    fn new(location: &PciDeviceLocation, index: u8, raw: u32) -> Result<Self> {
+        debug_assert_eq!(raw & 1, 0);
+
+        // Quoted sentences below are from "7.5.1.2.1 Base Address Registers (Offset 10h - 24h)" in
+        // "PCI Express(R) Base Specification Revision 5.0 Version 1.0".
+
+        // Check the "Memory Type" bitfield.
+        let address_length = match (raw >> 1) & 3 {
+            // "Base register is 32 bits wide and can be mapped anywhere in the 32 address bit
+            // Memory Space."
+            0b00 => AddrLen::Bits32,
+            // "Base register is 64 bits wide and can be mapped anywhere in the 64 address bit
+            // Memory Space."
+            0b10 => AddrLen::Bits64,
+            // "Reserved."
+            _ => return Err(Error::InvalidArgs),
+        };
+
         let offset = index as u16 * 4 + PciDeviceCommonCfgOffset::Bar0 as u16;
-        let raw = location.read32(offset);
+
+        // "Software saves the original value of the Base Address register, writes a value of all
+        // 1's to the register, then reads it back."
         location.write32(offset, !0);
-        let len_encoded = location.read32(offset);
-        location.write32(offset, raw);
-        let mut address_length = AddrLen::Bits32;
-        // base address, it may be bit64 or bit32
-        let base: u64 = match (raw & 0b110) >> 1 {
-            // bits32
-            0 => (raw & !0xF) as u64,
-            // bits64
-            2 => {
-                address_length = AddrLen::Bits64;
-                ((raw & !0xF) as u64) | ((location.read32(offset + 4) as u64) << 32)
-            }
-            _ => {
-                return Err(Error::InvalidArgs);
+
+        let size_encoded = location.read32(offset);
+
+        // "Unimplemented Base Address registers are hardwired to zero."
+        if size_encoded == 0 {
+            return Err(Error::InvalidArgs);
+        }
+
+        // "64-bit (memory) Base Address registers can be handled the same, except that the second
+        // 32 bit register is considered an extension of the first (i.e., bits 63:32). Software
+        // writes a value of all 1's to both registers, reads them back, and combines the result
+        // into a 64-bit value."
+        #[cfg_attr(target_arch = "loongarch64", expect(unused_variables))]
+        let (raw64, size_encoded64) = match address_length {
+            AddrLen::Bits32 => (raw as u64, size_encoded as u64 | ((u32::MAX as u64) << 32)),
+            AddrLen::Bits64 => {
+                let raw64 = raw as u64 | ((location.read32(offset + 4) as u64) << 32);
+                location.write32(offset + 4, !0);
+                let size_encoded64 =
+                    size_encoded as u64 | ((location.read32(offset + 4) as u64) << 32);
+                (raw64, size_encoded64)
             }
         };
-        // length
-        let size = (!(len_encoded & !0xF)).wrapping_add(1);
+
+        // "Size calculation can be done from the 32 bit value read by first clearing encoding
+        // information bits (bits 1:0 for I/O, bits 3:0 for memory), inverting all 32 bits (logical
+        // NOT), then incrementing by 1."
+        let size = !(size_encoded64 & !0xF) + 1;
+
+        // Restore the original base address.
+        #[cfg(not(target_arch = "loongarch64"))]
+        let base = raw64 & !0xF;
+        // In LoongArch, the BAR base address needs to be allocated manually.
+        #[cfg(target_arch = "loongarch64")]
+        let base = {
+            use core::alloc::Layout;
+            crate::arch::pci::alloc_mmio(
+                Layout::from_size_align(size as usize, size as usize).unwrap(),
+            )
+            .unwrap() as u64
+        };
+        match address_length {
+            AddrLen::Bits32 => location.write32(offset, base as u32),
+            AddrLen::Bits64 => {
+                location.write32(offset, base as u32);
+                location.write32(offset + 4, (base >> 32) as u32);
+            }
+        }
+
+        // FIXME: At least on some x86 laptops, it has been found that the BIOS does not properly
+        // initialize all PCI devices. Consequently, the base address reported by uninitialized PCI
+        // devices is zero. To address this, we may need to add the ability to manually allocate
+        // the base address.
+        #[cfg(not(target_arch = "loongarch64"))]
+        if base == 0 {
+            log::info!(
+                "presumably uninitialized BAR {} (Memory {:?}, size={}) of PCI device {:?}",
+                index,
+                address_length,
+                size,
+                location,
+            );
+            return Err(Error::InvalidArgs);
+        }
+
+        // Check the "Prefetchable" bit.
         let prefetchable = raw & 0b1000 != 0;
-        // The BAR is located in I/O memory region
+
         Ok(MemoryBar {
             base,
             size,
             prefetchable,
             address_length,
+            // SAFETY: The address range is initialized by the BIOS or allocated by us. It is
+            // guaranteed to be I/O memory.
             io_memory: unsafe {
                 IoMem::new(
-                    (base as usize)..((base + size as u64) as usize),
+                    (base as usize)..((base + size) as usize),
                     PageFlags::RW,
                     CachePolicy::Uncacheable,
                 )
@@ -333,16 +402,39 @@ impl IoBar {
         Ok(())
     }
 
-    fn new(location: &PciDeviceLocation, index: u8) -> Result<Self> {
+    /// Creates an I/O port BAR structure.
+    fn new(location: &PciDeviceLocation, index: u8, raw: u32) -> Result<Self> {
+        debug_assert_eq!(raw & 1, 1);
+
         let offset = index as u16 * 4 + PciDeviceCommonCfgOffset::Bar0 as u16;
-        let raw = location.read32(offset);
+
+        // "Software saves the original value of the Base Address register, writes a value of all
+        // 1's to the register, then reads it back."
         location.write32(offset, !0);
-        let len_encoded = location.read32(offset);
-        location.write32(offset, raw);
-        let len = !(len_encoded & !0x3) + 1;
-        Ok(Self {
-            base: raw & !0x3,
-            size: len,
-        })
+        let size_encoded = location.read32(offset);
+
+        // "Size calculation can be done from the 32 bit value read by first clearing encoding
+        // information bits (bits 1:0 for I/O, bits 3:0 for memory), inverting all 32 bits (logical
+        // NOT), then incrementing by 1."
+        let size = !(size_encoded & !0x3) + 1;
+
+        // Restore the original base address.
+        let base = raw & 0x3;
+        location.write32(offset, base);
+
+        // FIXME: As with the memory BAR check, we assume that a zero base address means that the
+        // BAR has not been initialized. In the future, we may need to add the ability to manually
+        // allocate the base address.
+        if base == 0 {
+            log::info!(
+                "presumably uninitialized BAR {} (I/O, size={}) of PCI device {:?}",
+                index,
+                size,
+                location,
+            );
+            return Err(Error::InvalidArgs);
+        }
+
+        Ok(Self { base, size })
     }
 }

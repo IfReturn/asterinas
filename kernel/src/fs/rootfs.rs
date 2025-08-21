@@ -8,7 +8,7 @@ use spin::Once;
 
 use super::{
     fs_resolver::{FsPath, FsResolver},
-    path::MountNode,
+    path::Mount,
     ramfs::RamFS,
     utils::{FileSystem, InodeMode, InodeType},
 };
@@ -85,20 +85,20 @@ pub fn init(initramfs_buf: &[u8]) -> Result<()> {
         let mode = InodeMode::from_bits_truncate(metadata.permission_mode());
         match metadata.file_type() {
             FileType::File => {
-                let dentry = parent.new_fs_child(name, InodeType::File, mode)?;
-                entry.read_all(dentry.inode().writer(0))?;
+                let path = parent.new_fs_child(name, InodeType::File, mode)?;
+                entry.read_all(path.inode().writer(0))?;
             }
             FileType::Dir => {
                 let _ = parent.new_fs_child(name, InodeType::Dir, mode)?;
             }
             FileType::Link => {
-                let dentry = parent.new_fs_child(name, InodeType::SymLink, mode)?;
+                let path = parent.new_fs_child(name, InodeType::SymLink, mode)?;
                 let link_content = {
                     let mut link_data: Vec<u8> = Vec::new();
                     entry.read_all(&mut link_data)?;
                     core::str::from_utf8(&link_data)?.to_string()
                 };
-                dentry.inode().write_link(&link_content)?;
+                path.inode().write_link(&link_content)?;
             }
             type_ => {
                 panic!("unsupported file type = {:?} in initramfs", type_);
@@ -106,28 +106,28 @@ pub fn init(initramfs_buf: &[u8]) -> Result<()> {
         }
     }
     // Mount DevFS
-    let dev_dentry = fs.lookup(&FsPath::try_from("/dev")?)?;
-    dev_dentry.mount(RamFS::new())?;
+    let dev_path = fs.lookup(&FsPath::try_from("/dev")?)?;
+    dev_path.mount(RamFS::new())?;
 
     println!("[kernel] rootfs is ready");
     Ok(())
 }
 
 pub fn mount_fs_at(fs: Arc<dyn FileSystem>, fs_path: &FsPath) -> Result<()> {
-    let target_dentry = FsResolver::new().lookup(fs_path)?;
-    target_dentry.mount(fs)?;
+    let target_path = FsResolver::new().lookup(fs_path)?;
+    target_path.mount(fs)?;
     Ok(())
 }
 
-static ROOT_MOUNT: Once<Arc<MountNode>> = Once::new();
+static ROOT_MOUNT: Once<Arc<Mount>> = Once::new();
 
 pub fn init_root_mount() {
-    ROOT_MOUNT.call_once(|| -> Arc<MountNode> {
+    ROOT_MOUNT.call_once(|| -> Arc<Mount> {
         let rootfs = RamFS::new();
-        MountNode::new_root(rootfs)
+        Mount::new_root(rootfs)
     });
 }
 
-pub fn root_mount() -> &'static Arc<MountNode> {
+pub fn root_mount() -> &'static Arc<Mount> {
     ROOT_MOUNT.get().unwrap()
 }

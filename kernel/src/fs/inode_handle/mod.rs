@@ -16,11 +16,11 @@ use crate::{
     events::IoEvents,
     fs::{
         file_handle::FileLike,
-        path::Dentry,
+        path::Path,
         utils::{
-            AccessMode, DirentVisitor, FallocMode, FileRange, FlockItem, FlockList, InodeMode,
-            InodeType, IoctlCmd, Metadata, RangeLockItem, RangeLockItemBuilder, RangeLockList,
-            RangeLockType, SeekFrom, StatusFlags, OFFSET_MAX,
+            AccessMode, DirentVisitor, FallocMode, FileRange, FlockItem, FlockList, Inode,
+            InodeMode, InodeType, IoctlCmd, Metadata, RangeLockItem, RangeLockItemBuilder,
+            RangeLockList, RangeLockType, SeekFrom, StatusFlags, OFFSET_MAX,
         },
     },
     prelude::*,
@@ -34,10 +34,10 @@ use crate::{
 pub struct InodeHandle<R = Rights>(Arc<InodeHandle_>, R);
 
 struct InodeHandle_ {
-    dentry: Dentry,
+    path: Path,
     /// `file_io` is Similar to `file_private` field in `file` structure in linux. If
     /// `file_io` is Some, typical file operations including `read`, `write`, `poll`,
-    /// `ioctl` will be provided by `file_io`, instead of `dentry`.
+    /// `ioctl` will be provided by `file_io`, instead of `path`.
     file_io: Option<Arc<dyn FileIo>>,
     offset: Mutex<usize>,
     access_mode: AccessMode,
@@ -50,7 +50,7 @@ impl InodeHandle_ {
             return file_io.read(writer);
         }
 
-        if !self.dentry.inode().is_seekable() {
+        if !self.path.inode().is_seekable() {
             return self.read_at(0, writer);
         }
 
@@ -67,14 +67,14 @@ impl InodeHandle_ {
             return file_io.write(reader);
         }
 
-        if !self.dentry.inode().is_seekable() {
+        if !self.path.inode().is_seekable() {
             return self.write_at(0, reader);
         }
 
         let mut offset = self.offset.lock();
 
         if self.status_flags().contains(StatusFlags::O_APPEND) {
-            *offset = self.dentry.size();
+            *offset = self.path.size();
         }
 
         let len = self.write_at(*offset, reader)?;
@@ -89,9 +89,9 @@ impl InodeHandle_ {
         }
 
         if self.status_flags().contains(StatusFlags::O_DIRECT) {
-            self.dentry.inode().read_direct_at(offset, writer)
+            self.path.inode().read_direct_at(offset, writer)
         } else {
-            self.dentry.inode().read_at(offset, writer)
+            self.path.inode().read_at(offset, writer)
         }
     }
 
@@ -103,43 +103,18 @@ impl InodeHandle_ {
         let status_flags = self.status_flags();
         if status_flags.contains(StatusFlags::O_APPEND) {
             // If the file has the O_APPEND flag, the offset is ignored
-            offset = self.dentry.size();
+            offset = self.path.size();
         }
 
         if status_flags.contains(StatusFlags::O_DIRECT) {
-            self.dentry.inode().write_direct_at(offset, reader)
+            self.path.inode().write_direct_at(offset, reader)
         } else {
-            self.dentry.inode().write_at(offset, reader)
+            self.path.inode().write_at(offset, reader)
         }
     }
 
     pub fn seek(&self, pos: SeekFrom) -> Result<usize> {
-        let mut offset = self.offset.lock();
-        let new_offset: isize = match pos {
-            SeekFrom::Start(off /* as usize */) => {
-                if off > isize::MAX as usize {
-                    return_errno_with_message!(Errno::EINVAL, "file offset is too large");
-                }
-                off as isize
-            }
-            SeekFrom::End(off /* as isize */) => {
-                let file_size = self.dentry.size() as isize;
-                assert!(file_size >= 0);
-                file_size
-                    .checked_add(off)
-                    .ok_or_else(|| Error::with_message(Errno::EOVERFLOW, "file offset overflow"))?
-            }
-            SeekFrom::Current(off /* as isize */) => (*offset as isize)
-                .checked_add(off)
-                .ok_or_else(|| Error::with_message(Errno::EOVERFLOW, "file offset overflow"))?,
-        };
-        if new_offset < 0 {
-            return_errno_with_message!(Errno::EINVAL, "file offset must not be negative");
-        }
-        // Invariant: 0 <= new_offset <= isize::MAX
-        let new_offset = new_offset as usize;
-        *offset = new_offset;
-        Ok(new_offset)
+        do_seek_util(self.path.inode(), &self.offset, pos)
     }
 
     pub fn offset(&self) -> usize {
@@ -148,10 +123,7 @@ impl InodeHandle_ {
     }
 
     pub fn resize(&self, new_size: usize) -> Result<()> {
-        if self.status_flags().contains(StatusFlags::O_APPEND) {
-            return_errno_with_message!(Errno::EPERM, "can not resize append-only file");
-        }
-        self.dentry.resize(new_size)
+        do_resize_util(self.path.inode(), self.status_flags(), new_size)
     }
 
     pub fn access_mode(&self) -> AccessMode {
@@ -170,7 +142,7 @@ impl InodeHandle_ {
 
     pub fn readdir(&self, visitor: &mut dyn DirentVisitor) -> Result<usize> {
         let mut offset = self.offset.lock();
-        let read_cnt = self.dentry.inode().readdir_at(*offset, visitor)?;
+        let read_cnt = self.path.inode().readdir_at(*offset, visitor)?;
         *offset += read_cnt;
         Ok(read_cnt)
     }
@@ -180,31 +152,11 @@ impl InodeHandle_ {
             return file_io.poll(mask, poller);
         }
 
-        self.dentry.inode().poll(mask, poller)
+        self.path.inode().poll(mask, poller)
     }
 
     fn fallocate(&self, mode: FallocMode, offset: usize, len: usize) -> Result<()> {
-        let status_flags = self.status_flags();
-        if status_flags.contains(StatusFlags::O_APPEND)
-            && (mode == FallocMode::PunchHoleKeepSize
-                || mode == FallocMode::CollapseRange
-                || mode == FallocMode::InsertRange)
-        {
-            return_errno_with_message!(
-                Errno::EPERM,
-                "the flags do not work on the append-only file"
-            );
-        }
-        if status_flags.contains(StatusFlags::O_DIRECT)
-            || status_flags.contains(StatusFlags::O_PATH)
-        {
-            return_errno_with_message!(
-                Errno::EBADF,
-                "currently fallocate file with O_DIRECT or O_PATH is not supported"
-            );
-        }
-
-        self.dentry.inode().fallocate(mode, offset, len)
+        do_fallocate_util(self.path.inode(), self.status_flags(), mode, offset, len)
     }
 
     fn ioctl(&self, cmd: IoctlCmd, arg: usize) -> Result<i32> {
@@ -212,12 +164,12 @@ impl InodeHandle_ {
             return file_io.ioctl(cmd, arg);
         }
 
-        self.dentry.inode().ioctl(cmd, arg)
+        self.path.inode().ioctl(cmd, arg)
     }
 
     fn test_range_lock(&self, lock: RangeLockItem) -> Result<RangeLockItem> {
         let mut req_lock = lock.clone();
-        if let Some(extension) = self.dentry.inode().extension() {
+        if let Some(extension) = self.path.inode().extension() {
             if let Some(range_lock_list) = extension.get::<RangeLockList>() {
                 req_lock = range_lock_list.test_lock(lock);
             } else {
@@ -240,7 +192,7 @@ impl InodeHandle_ {
         }
 
         self.check_range_lock_with_access_mode(lock)?;
-        if let Some(extension) = self.dentry.inode().extension() {
+        if let Some(extension) = self.path.inode().extension() {
             let range_lock_list = match extension.get::<RangeLockList>() {
                 Some(list) => list,
                 None => extension.get_or_put_default::<RangeLockList>(),
@@ -256,7 +208,7 @@ impl InodeHandle_ {
     }
 
     fn release_range_locks(&self) {
-        if self.dentry.inode().extension().is_none() {
+        if self.path.inode().extension().is_none() {
             return;
         }
 
@@ -269,7 +221,7 @@ impl InodeHandle_ {
     }
 
     fn unlock_range_lock(&self, lock: &RangeLockItem) {
-        if let Some(extension) = self.dentry.inode().extension() {
+        if let Some(extension) = self.path.inode().extension() {
             if let Some(range_lock_list) = extension.get::<RangeLockList>() {
                 range_lock_list.unlock(lock);
             }
@@ -294,7 +246,7 @@ impl InodeHandle_ {
     }
 
     fn set_flock(&self, lock: FlockItem, is_nonblocking: bool) -> Result<()> {
-        if let Some(extension) = self.dentry.inode().extension() {
+        if let Some(extension) = self.path.inode().extension() {
             let flock_list = match extension.get::<FlockList>() {
                 Some(list) => list,
                 None => extension.get_or_put_default::<FlockList>(),
@@ -310,7 +262,7 @@ impl InodeHandle_ {
     }
 
     fn unlock_flock<R>(&self, req_owner: &InodeHandle<R>) {
-        if let Some(extension) = self.dentry.inode().extension() {
+        if let Some(extension) = self.path.inode().extension() {
             if let Some(flock_list) = extension.get::<FlockList>() {
                 flock_list.unlock(req_owner);
             }
@@ -318,7 +270,7 @@ impl InodeHandle_ {
     }
 }
 
-#[inherit_methods(from = "self.dentry")]
+#[inherit_methods(from = "self.path")]
 impl InodeHandle_ {
     pub fn size(&self) -> usize;
     pub fn metadata(&self) -> Metadata;
@@ -333,7 +285,7 @@ impl InodeHandle_ {
 impl Debug for InodeHandle_ {
     fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
         f.debug_struct("InodeHandle_")
-            .field("dentry", &self.dentry)
+            .field("path", &self.path)
             .field("offset", &self.offset())
             .field("access_mode", &self.access_mode())
             .field("status_flags", &self.status_flags())
@@ -343,8 +295,8 @@ impl Debug for InodeHandle_ {
 
 /// Methods for both dyn and static
 impl<R> InodeHandle<R> {
-    pub fn dentry(&self) -> &Dentry {
-        &self.0.dentry
+    pub fn path(&self) -> &Path {
+        &self.0.path
     }
 
     pub fn test_range_lock(&self, lock: RangeLockItem) -> Result<RangeLockItem> {
@@ -387,4 +339,72 @@ pub trait FileIo: Pollable + Send + Sync + 'static {
     fn ioctl(&self, cmd: IoctlCmd, arg: usize) -> Result<i32> {
         return_errno_with_message!(Errno::EINVAL, "ioctl is not supported");
     }
+}
+
+pub fn do_seek_util(inode: &Arc<dyn Inode>, offset: &Mutex<usize>, pos: SeekFrom) -> Result<usize> {
+    let mut offset = offset.lock();
+    let new_offset: isize = match pos {
+        SeekFrom::Start(off /* as usize */) => {
+            if off > isize::MAX as usize {
+                return_errno_with_message!(Errno::EINVAL, "file offset is too large");
+            }
+            off as isize
+        }
+        SeekFrom::End(off /* as isize */) => {
+            let file_size = inode.size() as isize;
+            assert!(file_size >= 0);
+            file_size
+                .checked_add(off)
+                .ok_or_else(|| Error::with_message(Errno::EOVERFLOW, "file offset overflow"))?
+        }
+        SeekFrom::Current(off /* as isize */) => (*offset as isize)
+            .checked_add(off)
+            .ok_or_else(|| Error::with_message(Errno::EOVERFLOW, "file offset overflow"))?,
+    };
+    if new_offset < 0 {
+        return_errno_with_message!(Errno::EINVAL, "file offset must not be negative");
+    }
+    // Invariant: 0 <= new_offset <= isize::MAX
+    let new_offset = new_offset as usize;
+    *offset = new_offset;
+    Ok(new_offset)
+}
+
+pub fn do_fallocate_util(
+    inode: &Arc<dyn Inode>,
+    status_flags: StatusFlags,
+    mode: FallocMode,
+    offset: usize,
+    len: usize,
+) -> Result<()> {
+    if status_flags.contains(StatusFlags::O_APPEND)
+        && (mode == FallocMode::PunchHoleKeepSize
+            || mode == FallocMode::CollapseRange
+            || mode == FallocMode::InsertRange)
+    {
+        return_errno_with_message!(
+            Errno::EPERM,
+            "the flags do not work on the append-only file"
+        );
+    }
+    if status_flags.contains(StatusFlags::O_DIRECT) || status_flags.contains(StatusFlags::O_PATH) {
+        return_errno_with_message!(
+            Errno::EBADF,
+            "currently fallocate file with O_DIRECT or O_PATH is not supported"
+        );
+    }
+
+    inode.fallocate(mode, offset, len)
+}
+
+pub fn do_resize_util(
+    inode: &Arc<dyn Inode>,
+    status_flags: StatusFlags,
+    new_size: usize,
+) -> Result<()> {
+    if status_flags.contains(StatusFlags::O_APPEND) {
+        // FIXME: It's allowed to `ftruncate` an append-only file on Linux.
+        return_errno_with_message!(Errno::EPERM, "can not resize append-only file");
+    }
+    inode.resize(new_size)
 }

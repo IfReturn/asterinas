@@ -12,6 +12,7 @@ use crate::{
         process_table,
         signal::sig_num::SigNum,
         status::StopWaitStatus,
+        Uid,
     },
     time::clocks::ProfClock,
 };
@@ -32,6 +33,8 @@ bitflags! {
 
 impl WaitOptions {
     pub fn check(&self) -> Result<()> {
+        // FIXME: The syscall `waitid` allows using WNOWAIT with
+        // WSTOPPED or WCONTINUED
         if self.intersects(WaitOptions::WSTOPPED | WaitOptions::WCONTINUED)
             && self.contains(WaitOptions::WNOWAIT)
         {
@@ -63,6 +66,12 @@ pub fn do_wait(
 ) -> Result<Option<WaitStatus>> {
     wait_options.check()?;
 
+    let is_nonblocking = if let ProcessFilter::WithPidfd(pid_file) = &child_filter {
+        pid_file.is_nonblocking()
+    } else {
+        false
+    };
+
     let zombie_child = with_sigmask_changed(
         ctx,
         |sigmask| sigmask + SIGCHLD,
@@ -75,10 +84,13 @@ pub fn do_wait(
 
                 let unwaited_children = children_lock
                     .values()
-                    .filter(|child| match child_filter {
+                    .filter(|child| match &child_filter {
                         ProcessFilter::Any => true,
-                        ProcessFilter::WithPid(pid) => child.pid() == pid,
-                        ProcessFilter::WithPgid(pgid) => child.pgid() == pgid,
+                        ProcessFilter::WithPid(pid) => child.pid() == *pid,
+                        ProcessFilter::WithPgid(pgid) => child.pgid() == *pgid,
+                        ProcessFilter::WithPidfd(pid_file) => {
+                            Arc::ptr_eq(pid_file.process(), *child)
+                        }
                     })
                     .collect::<Box<_>>();
 
@@ -104,6 +116,13 @@ pub fn do_wait(
                     return Some(Ok(None));
                 }
 
+                if is_nonblocking {
+                    return Some(Err(Error::with_message(
+                        Errno::EAGAIN,
+                        "the PID file is nonblocking and the child has not terminated",
+                    )));
+                }
+
                 // wait
                 None
             })
@@ -120,16 +139,17 @@ pub enum WaitStatus {
 }
 
 impl WaitStatus {
-    pub fn pid(&self) -> u32 {
+    pub fn pid(&self) -> Pid {
         self.process().pid()
     }
 
-    pub fn status_code(&self) -> u32 {
-        match self {
-            Self::Zombie(process) => process.status().exit_code(),
-            Self::Stop(_, sig_num) => ((sig_num.as_u8() as u32) << 8) | 0x7f,
-            Self::Continue(_) => 0xffff,
-        }
+    pub fn uid(&self) -> Uid {
+        self.process()
+            .main_thread()
+            .as_posix_thread()
+            .unwrap()
+            .credentials()
+            .ruid()
     }
 
     pub fn prof_clock(&self) -> &Arc<ProfClock> {

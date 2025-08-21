@@ -1,5 +1,10 @@
 // SPDX-License-Identifier: MPL-2.0
 
+#![cfg_attr(
+    any(target_arch = "riscv64", target_arch = "loongarch64"),
+    allow(unfulfilled_lint_expectations)
+)]
+
 use alloc::sync::Arc;
 use core::ops::Range;
 
@@ -9,7 +14,8 @@ use crate::{
     error::Error,
     mm::{
         dma::{dma_type, Daddr, DmaType},
-        HasPaddr, Infallible, Paddr, USegment, UntypedMem, VmIo, VmReader, VmWriter, PAGE_SIZE,
+        io_util::{HasVmReaderWriter, VmReaderWriterResult},
+        HasPaddr, Infallible, Paddr, USegment, VmReader, VmWriter, PAGE_SIZE,
     },
 };
 
@@ -135,8 +141,8 @@ impl DmaStream {
     ///    (e.g., using [`write_bytes`]).
     ///    Before the CPU side notifies the device side to read, it must call the `sync` method first.
     ///
-    /// [`read_bytes`]: Self::read_bytes
-    /// [`write_bytes`]: Self::write_bytes
+    /// [`read_bytes`]: crate::mm::VmIo::read_bytes
+    /// [`write_bytes`]: crate::mm::VmIo::write_bytes
     pub fn sync(&self, _byte_range: Range<usize>) -> Result<(), Error> {
         cfg_if::cfg_if! {
             if #[cfg(target_arch = "x86_64")]{
@@ -150,9 +156,9 @@ impl DmaStream {
                 if self.inner.is_cache_coherent {
                     return Ok(());
                 }
-                let start_va = crate::mm::paddr_to_vaddr(self.inner.segment.start_paddr()) as *const u8;
+                let _start_va = crate::mm::paddr_to_vaddr(self.inner.segment.start_paddr()) as *const u8;
                 // TODO: Query the CPU for the cache line size via CPUID, we use 64 bytes as the cache line size here.
-                for i in _byte_range.step_by(64) {
+                for _i in _byte_range.step_by(64) {
                     // TODO: Call the cache line flush command in the corresponding architecture.
                     todo!()
                 }
@@ -203,35 +209,17 @@ impl Drop for DmaStreamInner {
     }
 }
 
-impl VmIo for DmaStream {
-    /// Reads data into the buffer.
-    fn read(&self, offset: usize, writer: &mut VmWriter) -> Result<(), Error> {
-        if self.inner.direction == DmaDirection::ToDevice {
-            return Err(Error::AccessDenied);
-        }
-        self.inner.segment.read(offset, writer)
-    }
+impl HasVmReaderWriter for DmaStream {
+    type Types = VmReaderWriterResult;
 
-    /// Writes data from the buffer.
-    fn write(&self, offset: usize, reader: &mut VmReader) -> Result<(), Error> {
-        if self.inner.direction == DmaDirection::FromDevice {
-            return Err(Error::AccessDenied);
-        }
-        self.inner.segment.write(offset, reader)
-    }
-}
-
-impl<'a> DmaStream {
-    /// Returns a reader to read data from it.
-    pub fn reader(&'a self) -> Result<VmReader<'a, Infallible>, Error> {
+    fn reader(&self) -> Result<VmReader<'_, Infallible>, Error> {
         if self.inner.direction == DmaDirection::ToDevice {
             return Err(Error::AccessDenied);
         }
         Ok(self.inner.segment.reader())
     }
 
-    /// Returns a writer to write data into it.
-    pub fn writer(&'a self) -> Result<VmWriter<'a, Infallible>, Error> {
+    fn writer(&self) -> Result<VmWriter<'_, Infallible>, Error> {
         if self.inner.direction == DmaDirection::FromDevice {
             return Err(Error::AccessDenied);
         }
@@ -300,35 +288,21 @@ impl<Dma: AsRef<DmaStream>> DmaStreamSlice<Dma> {
             .as_ref()
             .sync(self.offset..self.offset + self.len)
     }
+}
 
-    /// Returns a reader to read data from it.
-    pub fn reader(&self) -> Result<VmReader<Infallible>, Error> {
+impl<Dma: AsRef<DmaStream>> HasVmReaderWriter for DmaStreamSlice<Dma> {
+    type Types = VmReaderWriterResult;
+
+    fn reader(&self) -> Result<VmReader<'_, Infallible>, Error> {
         let mut stream_reader = self.stream.as_ref().reader()?;
         stream_reader.skip(self.offset).limit(self.len);
         Ok(stream_reader)
     }
 
-    /// Returns a writer to write data into it.
-    pub fn writer(&self) -> Result<VmWriter<Infallible>, Error> {
+    fn writer(&self) -> Result<VmWriter<'_, Infallible>, Error> {
         let mut stream_writer = self.stream.as_ref().writer()?;
         stream_writer.skip(self.offset).limit(self.len);
         Ok(stream_writer)
-    }
-}
-
-impl<Dma: AsRef<DmaStream> + Send + Sync> VmIo for DmaStreamSlice<Dma> {
-    fn read(&self, offset: usize, writer: &mut VmWriter) -> Result<(), Error> {
-        if writer.avail() + offset > self.len {
-            return Err(Error::InvalidArgs);
-        }
-        self.stream.as_ref().read(self.offset + offset, writer)
-    }
-
-    fn write(&self, offset: usize, reader: &mut VmReader) -> Result<(), Error> {
-        if reader.remain() + offset > self.len {
-            return Err(Error::InvalidArgs);
-        }
-        self.stream.as_ref().write(self.offset + offset, reader)
     }
 }
 

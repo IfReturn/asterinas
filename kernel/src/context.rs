@@ -6,8 +6,8 @@ use core::{cell::Ref, mem};
 
 use aster_rights::Full;
 use ostd::{
-    mm::{Fallible, Infallible, VmReader, VmWriter, MAX_USERSPACE_VADDR},
-    task::{CurrentTask, Task},
+    mm::{Fallible, Infallible, PodAtomic, VmReader, VmWriter, MAX_USERSPACE_VADDR},
+    task::Task,
 };
 
 use crate::{
@@ -50,8 +50,13 @@ pub struct CurrentUserSpace<'a>(Ref<'a, Option<Vmar<Full>>>);
 #[macro_export]
 macro_rules! current_userspace {
     () => {{
-        use $crate::context::CurrentUserSpace;
-        CurrentUserSpace::new(&ostd::task::Task::current().unwrap())
+        use $crate::{context::CurrentUserSpace, process::posix_thread::AsThreadLocal};
+        CurrentUserSpace::new(
+            ostd::task::Task::current()
+                .unwrap()
+                .as_thread_local()
+                .unwrap(),
+        )
     }};
 }
 
@@ -62,8 +67,7 @@ impl<'a> CurrentUserSpace<'a> {
     ///
     /// Otherwise, you can use the `current_userspace` macro
     /// to obtain an instance of `CurrentUserSpace` if it will only be used once.
-    pub fn new(current_task: &'a CurrentTask) -> Self {
-        let thread_local = current_task.as_thread_local().unwrap();
+    pub fn new(thread_local: &'a ThreadLocal) -> Self {
         let vmar_ref = thread_local.root_vmar().borrow();
         Self(vmar_ref)
     }
@@ -151,6 +155,55 @@ impl<'a> CurrentUserSpace<'a> {
 
         let mut user_writer = self.writer(dest, core::mem::size_of::<T>())?;
         Ok(user_writer.write_val(val)?)
+    }
+
+    /// Atomically loads a `PodAtomic` value with [`Ordering::Relaxed`] semantics.
+    ///
+    /// # Panics
+    ///
+    /// This method will panic if `vaddr` is not aligned on a `core::mem::align_of::<T>()`-byte
+    /// boundary.
+    ///
+    /// [`Ordering::Relaxed`]: core::sync::atomic::Ordering::Relaxed
+    pub fn atomic_load<T: PodAtomic>(&self, vaddr: Vaddr) -> Result<T> {
+        check_vaddr(vaddr)?;
+
+        let user_reader = self.reader(vaddr, core::mem::size_of::<T>())?;
+        Ok(user_reader.atomic_load()?)
+    }
+
+    /// Atomically updates a `PodAtomic` value with [`Ordering::Relaxed`] semantics.
+    ///
+    /// This method internally fetches the old value via [`atomic_load`], applies `op` to compute a
+    /// new value, and updates the value via [`atomic_compare_exchange`]. If the value changes
+    /// concurrently, this method will retry so the operation may be performed multiple times.
+    ///
+    /// If the update is completely successful, returns `Ok` with the old value (i.e., the value
+    /// _before_ applying `op`). Otherwise, it returns `Err`.
+    ///
+    /// # Panics
+    ///
+    /// This method will panic if `vaddr` is not aligned on a `core::mem::align_of::<T>()`-byte
+    /// boundary.
+    ///
+    /// [`Ordering::Relaxed`]: core::sync::atomic::Ordering::Relaxed
+    /// [`atomic_load`]: VmReader::atomic_load
+    /// [`atomic_compare_exchange`]: VmWriter::atomic_compare_exchange
+    pub fn atomic_fetch_update<T>(&self, vaddr: Vaddr, op: impl Fn(T) -> T) -> Result<T>
+    where
+        T: PodAtomic + Eq,
+    {
+        check_vaddr(vaddr)?;
+        let writer = self.writer(vaddr, core::mem::size_of::<T>())?;
+        let reader = self.reader(vaddr, core::mem::size_of::<T>())?;
+
+        let mut old_val = reader.atomic_load()?;
+        loop {
+            match writer.atomic_compare_exchange(&reader, old_val, op(old_val))? {
+                (_, true) => return Ok(old_val),
+                (cur_val, false) => old_val = cur_val,
+            }
+        }
     }
 
     /// Reads a C string from the user space of the current process.
@@ -320,7 +373,7 @@ fn check_vaddr(va: Vaddr) -> Result<()> {
     if va < crate::vm::vmar::ROOT_VMAR_LOWEST_ADDR {
         Err(Error::with_message(
             Errno::EFAULT,
-            "Bad user space pointer specified",
+            "the userspace address is too small",
         ))
     } else {
         Ok(())

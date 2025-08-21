@@ -8,7 +8,9 @@ use ostd::{
 };
 
 use super::SyscallReturn;
-use crate::{prelude::*, process::signal::c_types::ucontext_t};
+use crate::{
+    prelude::*, process::signal::c_types::ucontext_t, syscall::sigaltstack::set_new_stack,
+};
 
 pub fn sys_rt_sigreturn(ctx: &Context, user_ctx: &mut UserContext) -> Result<SyscallReturn> {
     let Context {
@@ -30,14 +32,6 @@ pub fn sys_rt_sigreturn(ctx: &Context, user_ctx: &mut UserContext) -> Result<Sys
 
     let ucontext = ctx.user_space().read_val::<ucontext_t>(sig_context_addr)?;
 
-    // If the sig stack is active and used by current handler, decrease handler counter.
-    if let Some(sig_stack) = &mut *thread_local.sig_stack().borrow_mut() {
-        let rsp = user_ctx.stack_pointer();
-        if rsp >= sig_stack.base() && rsp <= sig_stack.base() + sig_stack.size() {
-            sig_stack.decrease_handler_counter();
-        }
-    }
-
     // Set previous ucontext address
     if ucontext.uc_link == 0 {
         thread_local.sig_context().set(None);
@@ -46,12 +40,19 @@ pub fn sys_rt_sigreturn(ctx: &Context, user_ctx: &mut UserContext) -> Result<Sys
     };
     ucontext.uc_mcontext.copy_user_regs_to(user_ctx);
 
+    // Restore signal stack settings
+    let stack = ucontext.uc_stack;
+    // If the stack setting is invalid, we silently ignore the error,
+    // following Linux's behavior.
+    // Reference: <https://elixir.bootlin.com/linux/v6.15/source/kernel/signal.c#L4456>.
+    let _ = set_new_stack(stack, ctx, user_ctx.stack_pointer());
+
     // Restore FPU context on stack
     cfg_if::cfg_if! {
         if #[cfg(target_arch = "x86_64")] {
             let fpu_context_addr = ucontext.uc_mcontext.fpu_context_addr();
-        } else if #[cfg(target_arch = "riscv64")] {
-            // In RISC-V, FPU context is placed directly after `ucontext_t` on signal stack.
+        } else if #[cfg(any(target_arch = "riscv64", target_arch = "loongarch64"))] {
+            // In RISC-V/LoongArch64, FPU context is placed directly after `ucontext_t` on signal stack.
             let fpu_context_addr = sig_context_addr + size_of::<ucontext_t>();
         } else {
             compile_error!("unsupported target");

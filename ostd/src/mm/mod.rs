@@ -2,6 +2,11 @@
 
 //! Virtual memory (VM).
 
+#![cfg_attr(
+    any(target_arch = "riscv64", target_arch = "loongarch64"),
+    expect(unused_imports)
+)]
+
 /// Virtual addresses.
 pub type Vaddr = usize;
 
@@ -12,6 +17,7 @@ pub(crate) mod dma;
 pub mod frame;
 pub mod heap;
 pub mod io;
+pub mod io_util;
 pub(crate) mod kspace;
 pub(crate) mod page_prop;
 pub(crate) mod page_table;
@@ -29,12 +35,12 @@ pub use self::{
         allocator::FrameAllocOptions,
         segment::{Segment, USegment},
         unique::UniqueFrame,
-        untyped::{AnyUFrameMeta, UFrame, UntypedMem},
+        untyped::{AnyUFrameMeta, UFrame},
         Frame,
     },
     io::{
-        Fallible, FallibleVmRead, FallibleVmWrite, Infallible, PodOnce, VmIo, VmIoOnce, VmReader,
-        VmWriter,
+        Fallible, FallibleVmRead, FallibleVmWrite, Infallible, PodAtomic, PodOnce, VmIo, VmIoFill,
+        VmIoOnce, VmReader, VmWriter,
     },
     page_prop::{CachePolicy, PageFlags, PageProperty},
     vm_space::VmSpace,

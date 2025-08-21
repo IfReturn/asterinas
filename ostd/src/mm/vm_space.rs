@@ -90,7 +90,7 @@ impl VmSpace {
         guard: &'a G,
         va: &Range<Vaddr>,
     ) -> Result<Cursor<'a>> {
-        Ok(self.pt.cursor(guard, va).map(Cursor)?)
+        Ok(Cursor(self.pt.cursor(guard, va)?))
     }
 
     /// Gets an mutable cursor in the virtual address range.
@@ -108,10 +108,10 @@ impl VmSpace {
         guard: &'a G,
         va: &Range<Vaddr>,
     ) -> Result<CursorMut<'a>> {
-        Ok(self.pt.cursor_mut(guard, va).map(|pt_cursor| CursorMut {
-            pt_cursor,
+        Ok(CursorMut {
+            pt_cursor: self.pt.cursor_mut(guard, va)?,
             flusher: TlbFlusher::new(&self.cpus, disable_preempt()),
-        })?)
+        })
     }
 
     /// Activates the page table on the current CPU.
@@ -309,7 +309,7 @@ impl<'a> CursorMut<'a> {
                 debug_assert_eq!(va, start_va);
                 let (old_frame, _) = item;
                 self.flusher
-                    .issue_tlb_flush_with(TlbFlushOp::Address(start_va), old_frame.into());
+                    .issue_tlb_flush_with(TlbFlushOp::for_single(start_va), old_frame.into());
                 self.flusher.dispatch_tlb_flush();
             }
             PageTableFrag::StrayPageTable { .. } => {
@@ -351,7 +351,7 @@ impl<'a> CursorMut<'a> {
                     let (frame, _) = item;
                     num_unmapped += 1;
                     self.flusher
-                        .issue_tlb_flush_with(TlbFlushOp::Address(va), frame.into());
+                        .issue_tlb_flush_with(TlbFlushOp::for_single(va), frame.into());
                 }
                 PageTableFrag::StrayPageTable {
                     pt,
@@ -361,7 +361,7 @@ impl<'a> CursorMut<'a> {
                 } => {
                     num_unmapped += num_frames;
                     self.flusher
-                        .issue_tlb_flush_with(TlbFlushOp::Range(va..va + len), pt);
+                        .issue_tlb_flush_with(TlbFlushOp::for_range(va..va + len), pt);
                 }
             }
         }

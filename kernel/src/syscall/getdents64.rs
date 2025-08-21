@@ -25,7 +25,7 @@ pub fn sys_getdents(
     let mut file_table = ctx.thread_local.borrow_file_table_mut();
     let file = get_file_fast!(&mut file_table, fd);
     let inode_handle = file.as_inode_or_err()?;
-    if inode_handle.dentry().type_() != InodeType::Dir {
+    if inode_handle.path().type_() != InodeType::Dir {
         return_errno!(Errno::ENOTDIR);
     }
     let mut buffer = vec![0u8; buf_len];
@@ -51,7 +51,7 @@ pub fn sys_getdents64(
     let mut file_table = ctx.thread_local.borrow_file_table_mut();
     let file = get_file_fast!(&mut file_table, fd);
     let inode_handle = file.as_inode_or_err()?;
-    if inode_handle.dentry().type_() != InodeType::Dir {
+    if inode_handle.path().type_() != InodeType::Dir {
         return_errno!(Errno::ENOTDIR);
     }
     let mut buffer = vec![0u8; buf_len];
@@ -233,7 +233,6 @@ impl DirentSerializer for Dirent64 {
 #[repr(u8)]
 #[derive(Debug, Clone, Copy)]
 enum DirentType {
-    #[expect(dead_code)]
     DT_UNKNOWN = 0,
     DT_FIFO = 1,
     DT_CHR = 2,
@@ -249,6 +248,7 @@ enum DirentType {
 impl From<InodeType> for DirentType {
     fn from(type_: InodeType) -> Self {
         match type_ {
+            InodeType::Unknown => DirentType::DT_UNKNOWN,
             InodeType::File => DirentType::DT_REG,
             InodeType::Dir => DirentType::DT_DIR,
             InodeType::SymLink => DirentType::DT_LNK,

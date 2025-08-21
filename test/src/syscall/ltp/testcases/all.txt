@@ -249,10 +249,10 @@ fallocate03
 #posix_fadvise test cases
 # posix_fadvise01
 # posix_fadvise01_64
-# posix_fadvise02
-# posix_fadvise02_64
-# posix_fadvise03
-# posix_fadvise03_64
+posix_fadvise02
+posix_fadvise02_64
+posix_fadvise03
+posix_fadvise03_64
 # posix_fadvise04
 # posix_fadvise04_64
 
@@ -651,9 +651,9 @@ getxattr01
 # iopl01
 # iopl02
 
-# ioprio_get01
-# ioprio_set01
-# ioprio_set02
+ioprio_get01
+ioprio_set01
+ioprio_set02
 # ioprio_set03
 
 # io_cancel01
@@ -1014,10 +1014,10 @@ pathconf01
 # pidfd_getfd01
 # pidfd_getfd02
 
-# pidfd_open01
-# pidfd_open02
-# pidfd_open03
-# pidfd_open04
+pidfd_open01
+pidfd_open02
+pidfd_open03
+pidfd_open04
 
 # pidfd_send_signal01
 # pidfd_send_signal02
@@ -1290,7 +1290,7 @@ select03
 # semctl08
 # semctl09
 
-# semget01
+semget01
 # semget02
 # semget05
 
@@ -1772,17 +1772,17 @@ waitpid11
 waitpid12
 # waitpid13
 
-# waitid01
-# waitid02
+waitid01
+waitid02
 waitid03
 waitid04
-# waitid05
-# waitid06
+waitid05
+waitid06
 # waitid07
-# waitid08
+waitid08
 waitid09
 # waitid10
-# waitid11
+waitid11
 
 write01
 write02

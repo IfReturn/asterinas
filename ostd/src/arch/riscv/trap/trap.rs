@@ -14,6 +14,8 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#![allow(unfulfilled_lint_expectations)]
+
 use core::arch::{asm, global_asm};
 
 use crate::arch::cpu::context::GeneralRegs;
@@ -55,11 +57,13 @@ global_asm!(include_str!("trap.S"));
 ///
 /// You **MUST NOT** modify these registers later.
 pub unsafe fn init() {
-    // Set sscratch register to 0, indicating to exception vector that we are
-    // presently executing in the kernel
-    asm!("csrw sscratch, zero");
-    // Set the exception vector address
-    asm!("csrw stvec, {}", in(reg) trap_entry as usize);
+    unsafe {
+        // Set sscratch register to 0, indicating to exception vector that we are
+        // presently executing in the kernel
+        asm!("csrw sscratch, zero");
+        // Set the exception vector address
+        asm!("csrw stvec, {}", in(reg) trap_entry as usize);
+    }
 }
 
 /// Trap frame of kernel interrupt
@@ -103,6 +107,9 @@ impl RawUserContext {
     /// On return, the context will be reset to the status before the trap.
     /// Trap reason and error code will be placed at `scause` and `stval`.
     pub(in crate::arch) fn run(&mut self) {
+        // Return to userspace with interrupts disabled. Otherwise, interrupts
+        // after switching `sscratch` will mess up the CPU state.
+        crate::arch::irq::disable_local();
         unsafe { run_user(self) }
     }
 }

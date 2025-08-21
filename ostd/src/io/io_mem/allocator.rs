@@ -2,6 +2,11 @@
 
 //! I/O Memory allocator.
 
+#![cfg_attr(
+    any(target_arch = "riscv64", target_arch = "loongarch64"),
+    expect(dead_code)
+)]
+
 use alloc::vec::Vec;
 use core::ops::Range;
 

@@ -32,8 +32,10 @@ sleep 0.2
 ./send_buf_full
 ./tcp_err
 ./tcp_poll
+./tcp_reuseaddr
 ./udp_err
-./unix_err
+./unix_stream_err
+./unix_seqpacket_err
 
 ./netlink_route
 ./rtnl_err

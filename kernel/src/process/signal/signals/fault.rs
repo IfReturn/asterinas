@@ -1,5 +1,10 @@
 // SPDX-License-Identifier: MPL-2.0
 
+#![cfg_attr(
+    any(target_arch = "riscv64", target_arch = "loongarch64"),
+    expect(dead_code)
+)]
+
 use super::Signal;
 use crate::{
     prelude::*,
