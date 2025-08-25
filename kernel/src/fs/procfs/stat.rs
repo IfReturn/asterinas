@@ -8,7 +8,11 @@
 use alloc::format;
 
 use aster_softirq::get_softirq_stats;
-use ostd::cpu::num_cpus;
+use ostd::{
+    cpu::num_cpus,
+    task::get_context_switches,
+    trap::{get_interrupt_stats, get_total_interrupts},
+};
 
 use crate::{
     fs::{
@@ -83,8 +87,9 @@ impl StatFileOps {
         intr_line.push('\n');
         output.push_str(&intr_line);
 
-        // TODO: Context switches
-        output.push_str("ctxt 0\n");
+        // Context switches
+        let context_switches = get_context_switches();
+        output.push_str(&format!("ctxt {}\n", context_switches));
 
         // Boot time (seconds since UNIX epoch)
         if let Some(start_time) = START_TIME.get() {
